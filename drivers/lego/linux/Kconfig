@@ -1,0 +1,27 @@
+
+config BOARD_INFO
+  tristate "Support for board info subsystem"
+  help
+    This enables the board info subsystem.
+
+config BONE_BOARD_INFO
+  tristate "Support for BeagleBone board info"
+  depends on BOARD_INFO && NVMEM
+  help
+    This enables board info driver for BeagleBone.
+
+config RPI_BOARD_INFO
+  tristate "Support for Raspberry Pi board info"
+  depends on BOARD_INFO
+  help
+    This enables board info driver for Raspberry Pi.
+
+source "drivers/lego/linux/omapl_pru/Kconfig"
+
+config TI_PRU_RPROC_EV3DEV
+  tristate "PRU rproc driver for TI PRU"
+  select REMOTEPROC
+  select RPMSG_VIRTIO
+  help
+    say yes here to build experimental ev3dev rproc driver for TI Programmable
+    Realtime Units.

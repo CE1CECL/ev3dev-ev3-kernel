@@ -145,6 +145,7 @@ static void rproc_disable_iommu(struct rproc *rproc)
  * @rproc: handle of a remote processor
  * @da: remoteproc device address to translate
  * @len: length of the memory region @da is pointing to
+ * @page: memory page for processors that have more than one memory map
  *
  * Some remote processors will ask us to allocate them physically contiguous
  * memory regions (which we call "carveouts"), and map them to specific
@@ -169,13 +170,13 @@ static void rproc_disable_iommu(struct rproc *rproc)
  * here the output of the DMA API for the carveouts, which should be more
  * correct.
  */
-void *rproc_da_to_va(struct rproc *rproc, u64 da, int len)
+void *rproc_da_to_va(struct rproc *rproc, u64 da, int len, int page)
 {
 	struct rproc_mem_entry *carveout;
 	void *ptr = NULL;
 
 	if (rproc->ops->da_to_va) {
-		ptr = rproc->ops->da_to_va(rproc, da, len);
+		ptr = rproc->ops->da_to_va(rproc, da, len, page);
 		if (ptr)
 			goto out;
 	}
@@ -378,6 +379,7 @@ static int rproc_handle_vdev(struct rproc *rproc, struct fw_rsc_vdev *rsc,
 	kref_init(&rvdev->refcount);
 
 	rvdev->id = rsc->id;
+	rvdev->notifyid = rsc->notifyid;
 	rvdev->rproc = rproc;
 
 	/* parse the vrings */
@@ -470,7 +472,7 @@ static int rproc_handle_trace(struct rproc *rproc, struct fw_rsc_trace *rsc,
 	}
 
 	/* what's the kernel address of this resource ? */
-	ptr = rproc_da_to_va(rproc, rsc->da, rsc->len);
+	ptr = rproc_da_to_va(rproc, rsc->da, rsc->len, 0);
 	if (!ptr) {
 		dev_err(dev, "erroneous trace resource entry\n");
 		return -EINVAL;
@@ -723,6 +725,42 @@ free_carv:
 	return ret;
 }
 
+/**
+ * rproc_handle_vendor_rsc() - provide implementation specific hook
+ *			       to handle vendor/custom resources
+ * @rproc: the remote processor
+ * @rsc: vendor resource to be handled by drivers
+ * @offset: offset of the resource data in resource table
+ * @avail: size of available data
+ *
+ * Remoteproc implementations might want to add resource table entries
+ * that are not generic enough to be handled by the framework. This
+ * provides a hook to handle such custom resources. Note that a single
+ * hook is reused between RSC_PRELOAD_VENDOR and RSC_PRELOAD_VENDOR
+ * resources with the platform driver implementation distinguishing
+ * the two based on the sub-type resource.
+ *
+ * Returns 0 on success, or an appropriate error code otherwise
+ */
+static int rproc_handle_vendor_rsc(struct rproc *rproc,
+				   struct fw_rsc_vendor *rsc,
+				   int offset, int avail)
+{
+	struct device *dev = &rproc->dev;
+
+	if (!rproc->ops->handle_vendor_rsc) {
+		dev_err(dev, "custom resource handler not implemented, ignoring resource\n");
+		return 0;
+	}
+
+	if (sizeof(*rsc) > avail) {
+		dev_err(dev, "custom resource is truncated\n");
+		return -EINVAL;
+	}
+
+	return rproc->ops->handle_vendor_rsc(rproc, (void *)rsc);
+}
+
 /*
  * A lookup table for resource handlers. The indices are defined in
  * enum fw_resource_type.
@@ -731,7 +769,13 @@ static rproc_handle_resource_t rproc_loading_handlers[RSC_LAST] = {
 	[RSC_CARVEOUT] = (rproc_handle_resource_t)rproc_handle_carveout,
 	[RSC_DEVMEM] = (rproc_handle_resource_t)rproc_handle_devmem,
 	[RSC_TRACE] = (rproc_handle_resource_t)rproc_handle_trace,
+	[RSC_PRELOAD_VENDOR] = (rproc_handle_resource_t)rproc_handle_vendor_rsc,
 	[RSC_VDEV] = (rproc_handle_resource_t)rproc_handle_vdev,
+};
+
+static rproc_handle_resource_t rproc_post_loading_handlers[RSC_LAST] = {
+	[RSC_POSTLOAD_VENDOR] =
+			(rproc_handle_resource_t)rproc_handle_vendor_rsc,
 };
 
 /* handle firmware resource entries before booting the remote processor */
@@ -941,6 +985,14 @@ static int rproc_start(struct rproc *rproc, const struct firmware *fw)
 		dev_err(dev, "failed to prepare subdevices for %s: %d\n",
 			rproc->name, ret);
 		goto reset_table_ptr;
+	}
+
+	/* handle fw resources which require fw segments to be loaded*/
+	ret = rproc_handle_resources(rproc, rproc_post_loading_handlers);
+	if (ret) {
+		dev_err(dev, "Failed to process post-loading resources: %d\n",
+			ret);
+		return ret;
 	}
 
 	/* power up the remote processor */
@@ -1183,7 +1235,7 @@ static void rproc_coredump(struct rproc *rproc)
 		phdr->p_flags = PF_R | PF_W | PF_X;
 		phdr->p_align = 0;
 
-		ptr = rproc_da_to_va(rproc, segment->da, segment->size);
+		ptr = rproc_da_to_va(rproc, segment->da, segment->size, 0);
 		if (!ptr) {
 			dev_err(&rproc->dev,
 				"invalid coredump segment (%pad, %zu)\n",
