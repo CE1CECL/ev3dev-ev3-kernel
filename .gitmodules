@@ -1,3 +1,0 @@
-[submodule "drivers/lego"]
-	path = drivers/lego
-	url = https://github.com/ev3dev/lego-linux-drivers
